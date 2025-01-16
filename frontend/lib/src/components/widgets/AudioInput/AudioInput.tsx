@@ -344,53 +344,72 @@ const AudioInput: React.FC<Props> = ({
   }, [wavesurfer])
 
   const startRecording = useCallback(async () => {
-    let audioDeviceId = activeAudioDeviceId
+    let audioDeviceId = activeAudioDeviceId;
 
     if (!hasRequestedMicPermissions) {
-      // this first part is to ensure we prompt for getting the user's media devices
+      // Ensure we prompt the user to grant microphone permissions
       await navigator.mediaDevices
         .getUserMedia({ audio: true })
         .then(() =>
-          RecordPlugin.getAvailableAudioDevices().then(devices => {
-            setAvailableAudioDevices(devices)
-            if (devices.length > 0) {
-              const { deviceId } = devices[0]
-              setActiveAudioDeviceId(deviceId)
-              audioDeviceId = deviceId
+          RecordPlugin.getAvailableAudioDevices().then((devices) => {
+            // Log all available media devices
+            console.log("Available audio devices:", devices);
+
+            setAvailableAudioDevices(devices);
+
+            if (devices.length > 1) {
+              // Choose the second device if there are multiple devices
+              const { deviceId, label } = devices[1];
+              console.log(`Selected audio device: ${label} (Device ID: ${deviceId})`);
+              setActiveAudioDeviceId(deviceId);
+              audioDeviceId = deviceId;
+            } else if (devices.length === 1) {
+              // Fallback to the only available device
+              const { deviceId, label } = devices[0];
+              console.log(`Selected audio device: ${label} (Device ID: ${deviceId})`);
+              setActiveAudioDeviceId(deviceId);
+              audioDeviceId = deviceId;
+            } else {
+              console.warn("No audio input devices found.");
             }
           })
         )
-        .catch(_err => {
-          setHasNoMicPermissions(true)
-        })
-      setHasRequestedMicPermissions(true)
+        .catch((_err) => {
+          console.error("Failed to get microphone permissions or devices.");
+          setHasNoMicPermissions(true);
+        });
+      setHasRequestedMicPermissions(true);
     }
 
     if (!recordPlugin || !audioDeviceId || !wavesurfer) {
-      return
+      console.error("Recording setup failed. Ensure all dependencies are initialized.");
+      return;
     }
 
     wavesurfer.setOptions({
       waveColor: theme.colors.primary,
-    })
+    });
 
     if (recordingUrl) {
-      handleClear({ updateWidgetManager: false, deleteFile: true })
+      handleClear({ updateWidgetManager: false, deleteFile: true });
     }
 
+    // Start recording with the selected device
+    console.log(`Starting recording with device ID: ${audioDeviceId}`);
     recordPlugin.startRecording({ deviceId: audioDeviceId }).then(() => {
-      // Update the record button to show the user that they can stop recording
-      forceRerender()
-    })
+      console.log("Recording started successfully.");
+      // Update the record button to show the user they can stop recording
+      forceRerender();
+    });
   }, [
     activeAudioDeviceId,
+    hasRequestedMicPermissions,
     recordPlugin,
-    theme,
     wavesurfer,
+    theme,
     recordingUrl,
     handleClear,
-    hasRequestedMicPermissions,
-  ])
+  ]);
 
   const stopRecording = useCallback(() => {
     if (!recordPlugin) return
