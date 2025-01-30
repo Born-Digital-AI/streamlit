@@ -19,6 +19,7 @@ import React, {
   ReactElement,
   useCallback,
   useEffect,
+  useRef,
   useState,
 } from "react"
 
@@ -72,6 +73,7 @@ import AudioInputActionButtons from "./AudioInputActionButtons"
 import convertAudioToWav from "./convertAudioToWav"
 import AudioInputErrorState from "./AudioInputErrorState"
 
+/** Props for the AudioInput component. */
 export interface Props {
   element: AudioInputProto
   uploadClient: FileUploadClient
@@ -80,6 +82,11 @@ export interface Props {
   disabled: boolean
 }
 
+/**
+ * A custom widget for recording audio. Allows selecting an input device
+ * (e.g., Bluetooth mic) directly, then capturing audio, visualizing it,
+ * and uploading it to the Streamlit server.
+ */
 const AudioInput: React.FC<Props> = ({
   element,
   uploadClient,
@@ -89,68 +96,61 @@ const AudioInput: React.FC<Props> = ({
 }): ReactElement => {
   const theme = useTheme()
   const previousTheme = usePrevious(theme)
+
+  // Reference for the WaveSurfer container
+  const waveSurferRef = useRef<HTMLDivElement | null>(null)
+
+  // Primary WaveSurfer instance + record plugin
   const [wavesurfer, setWavesurfer] = useState<WaveSurfer | null>(null)
-  const waveSurferRef = React.useRef<HTMLDivElement | null>(null)
-  const [deleteFileUrl, setDeleteFileUrl] = useWidgetManagerElementState<
-    string | null
-  >({
+  const [recordPlugin, setRecordPlugin] = useState<RecordPlugin | null>(null)
+
+  // State for enumerated devices and selected device
+  const [availableAudioDevices, setAvailableAudioDevices] = useState<MediaDeviceInfo[]>([])
+  const [activeAudioDeviceId, setActiveAudioDeviceId] = useState<string | null>(null)
+
+  // Internal states stored via custom hooks (preserving across reruns in Streamlit)
+  const [deleteFileUrl, setDeleteFileUrl] = useWidgetManagerElementState<string | null>({
     widgetMgr,
     id: element.id,
     key: "deleteFileUrl",
     defaultValue: null,
   })
-  const [recordPlugin, setRecordPlugin] = useState<RecordPlugin | null>(null)
-  // to eventually show the user the available audio devices
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [availableAudioDevices, setAvailableAudioDevices] = useState<
-    MediaDeviceInfo[]
-  >([])
-  const [activeAudioDeviceId, setActiveAudioDeviceId] = useState<
-    string | null
-  >(null)
-
-  const [recordingUrl, setRecordingUrl] = useWidgetManagerElementState<
-    string | null
-  >({
+  const [recordingUrl, setRecordingUrl] = useWidgetManagerElementState<string | null>({
     widgetMgr,
     id: element.id,
     key: "recordingUrl",
     defaultValue: null,
   })
-  const [, setRerender] = useState(0)
-  const forceRerender = (): void => {
-    setRerender(prev => prev + 1)
-  }
+  const [recordingTime, setRecordingTime] = useWidgetManagerElementState<string>({
+    widgetMgr,
+    id: element.id,
+    formId: element.formId,
+    key: "recordingTime",
+    defaultValue: STARTING_TIME_STRING,
+  })
+
+  // Local UI states
   const [progressTime, setProgressTime] = useState(STARTING_TIME_STRING)
-
-  const [recordingTime, setRecordingTime] =
-    useWidgetManagerElementState<string>({
-      widgetMgr,
-      id: element.id,
-      formId: element.formId,
-      key: "recordingTime",
-      defaultValue: STARTING_TIME_STRING,
-    })
-
-  const [shouldUpdatePlaybackTime, setShouldUpdatePlaybackTime] =
-    useState(false)
+  const [shouldUpdatePlaybackTime, setShouldUpdatePlaybackTime] = useState(false)
   const [hasNoMicPermissions, setHasNoMicPermissions] = useState(false)
-  const [hasRequestedMicPermissions, setHasRequestedMicPermissions] =
-    useState(false)
+  const [hasRequestedMicPermissions, setHasRequestedMicPermissions] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [isError, setIsError] = useState(false)
+  const [, setRerender] = useState(0)
+  const forceRerender = (): void => setRerender(x => x + 1)
 
   const widgetId = element.id
   const widgetFormId = element.formId
 
+  /** Convert (or keep) the audio Blob to WAV and upload to Streamlit. */
   const transcodeAndUploadFile = useCallback(
     async (blob: Blob) => {
       setIsUploading(true)
-      if (notNullOrUndefined(widgetFormId))
+      if (notNullOrUndefined(widgetFormId)) {
         widgetMgr.setFormsWithUploadsInProgress(new Set([widgetFormId]))
+      }
 
-      let wavBlob: Blob | undefined = undefined
-
+      let wavBlob: Blob | undefined
       if (blob.type === "audio/wav") {
         wavBlob = blob
       } else {
@@ -162,6 +162,7 @@ const AudioInput: React.FC<Props> = ({
         return
       }
 
+      // Create an object URL to store locally, set state to show playback
       const url = URL.createObjectURL(wavBlob)
       const timestamp = new Date().toISOString().slice(0, 16).replace(":", "-")
       const file = new File([wavBlob], `${timestamp}_audio.wav`, {
@@ -170,6 +171,7 @@ const AudioInput: React.FC<Props> = ({
 
       setRecordingUrl(url)
 
+      // Upload the newly created WAV file
       uploadFiles({
         files: [file],
         uploadClient,
@@ -183,28 +185,29 @@ const AudioInput: React.FC<Props> = ({
             return
           }
           const upload = successfulUploads[0]
-          if (upload && upload.fileUrl.deleteUrl) {
+          if (upload?.fileUrl.deleteUrl) {
             setDeleteFileUrl(upload.fileUrl.deleteUrl)
           }
         })
         .finally(() => {
-          if (notNullOrUndefined(widgetFormId))
+          if (notNullOrUndefined(widgetFormId)) {
             widgetMgr.setFormsWithUploadsInProgress(new Set())
-
+          }
           setIsUploading(false)
         })
     },
     [
-      setRecordingUrl,
       uploadClient,
       widgetMgr,
+      setRecordingUrl,
+      setDeleteFileUrl,
       widgetId,
       widgetFormId,
       fragmentId,
-      setDeleteFileUrl,
     ]
   )
 
+  /** Clear the current recording from the WaveSurfer and state. */
   const handleClear = useCallback(
     ({
       updateWidgetManager,
@@ -218,12 +221,15 @@ const AudioInput: React.FC<Props> = ({
       }
       setRecordingUrl(null)
       wavesurfer.empty()
+
       if (deleteFile) {
         uploadClient.deleteFile(deleteFileUrl)
       }
       setDeleteFileUrl(null)
+
       setProgressTime(STARTING_TIME_STRING)
       setRecordingTime(STARTING_TIME_STRING)
+
       if (updateWidgetManager) {
         widgetMgr.setFileUploaderStateValue(
           element,
@@ -232,25 +238,26 @@ const AudioInput: React.FC<Props> = ({
           fragmentId
         )
       }
+
       setShouldUpdatePlaybackTime(false)
       if (notNullOrUndefined(recordingUrl)) {
         URL.revokeObjectURL(recordingUrl)
       }
     },
     [
-      deleteFileUrl,
-      recordingUrl,
-      uploadClient,
       wavesurfer,
-      element,
       widgetMgr,
       fragmentId,
+      deleteFileUrl,
+      recordingUrl,
+      setDeleteFileUrl,
       setRecordingTime,
       setRecordingUrl,
-      setDeleteFileUrl,
+      element,
     ]
   )
 
+  /** Clear the recording on form reset (if this widget is inside a form). */
   useEffect(() => {
     if (isNullOrUndefined(widgetFormId)) return
 
@@ -262,8 +269,9 @@ const AudioInput: React.FC<Props> = ({
     return () => formClearHelper.disconnect()
   }, [widgetFormId, handleClear, widgetMgr])
 
+  /** Create and configure the WaveSurfer + RecordPlugin instance. */
   const initializeWaveSurfer = useCallback(() => {
-    if (waveSurferRef.current === null) return
+    if (!waveSurferRef.current) return
 
     const ws = WaveSurfer.create({
       container: waveSurferRef.current,
@@ -271,9 +279,7 @@ const AudioInput: React.FC<Props> = ({
         ? blend(theme.colors.fadedText40, theme.colors.secondaryBg)
         : theme.colors.primary,
       progressColor: theme.colors.bodyText,
-      height:
-        convertRemToPx(theme.sizes.largestElementHeight) -
-        2 * WAVEFORM_PADDING,
+      height: convertRemToPx(theme.sizes.largestElementHeight) - 2 * WAVEFORM_PADDING,
       barWidth: BAR_WIDTH,
       barGap: BAR_GAP,
       barRadius: BAR_RADIUS,
@@ -282,13 +288,12 @@ const AudioInput: React.FC<Props> = ({
     })
 
     ws.on("timeupdate", time => {
-      setProgressTime(formatTime(time * 1000)) // get from seconds to milliseconds
+      // Convert seconds to ms, then format
+      setProgressTime(formatTime(time * 1000))
     })
+    ws.on("pause", () => forceRerender())
 
-    ws.on("pause", () => {
-      forceRerender()
-    })
-
+    // Install record plugin
     const rp = ws.registerPlugin(
       RecordPlugin.create({
         scrollingWaveform: false,
@@ -296,10 +301,12 @@ const AudioInput: React.FC<Props> = ({
       })
     )
 
-    rp.on("record-end", async blob => {
-      transcodeAndUploadFile(blob)
+    // On record end, automatically upload the audio
+    rp.on("record-end", async (blob: Blob) => {
+      await transcodeAndUploadFile(blob)
     })
 
+    // Update local "recording time" as we record
     rp.on("record-progress", time => {
       setRecordingTime(formatTime(time))
     })
@@ -308,18 +315,15 @@ const AudioInput: React.FC<Props> = ({
     setRecordPlugin(rp)
 
     return () => {
-      if (ws) ws.destroy()
-      if (rp) rp.destroy()
+      ws.destroy()
+      rp.destroy()
     }
-    // note: intentionally excluding theme so that we don't have to recreate the wavesurfer instance
-    // and colors will be updated separately
-    // TODO: Update to match React best practices
-    // eslint-disable-next-line react-compiler/react-compiler
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [transcodeAndUploadFile])
+  }, [transcodeAndUploadFile]) // exclude theme so we don't recreate every time
 
   useEffect(() => initializeWaveSurfer(), [initializeWaveSurfer])
 
+  /** If theme changed, update wave + progress colors. */
   useEffect(() => {
     if (!isEqual(previousTheme, theme)) {
       wavesurfer?.setOptions({
@@ -331,115 +335,112 @@ const AudioInput: React.FC<Props> = ({
     }
   }, [theme, previousTheme, recordingUrl, wavesurfer])
 
+  /**
+   * Ask for mic permission, then enumerate devices and store them in state.
+   * We do this on mount (if not done before) so that once user grants access,
+   * device labels become visible.
+   */
+  useEffect(() => {
+    if (hasRequestedMicPermissions) {
+      return
+    }
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then(() => {
+        setHasRequestedMicPermissions(true)
+        return RecordPlugin.getAvailableAudioDevices()
+      })
+      .then(devices => {
+        const audioInputs = devices.filter(d => d.kind === "audioinput")
+        setAvailableAudioDevices(audioInputs)
+        // Optionally, auto-select the first device
+        if (audioInputs.length > 0) {
+          setActiveAudioDeviceId(audioInputs[0].deviceId)
+        }
+      })
+      .catch(err => {
+        console.error("Failed to get microphone permissions or devices:", err)
+        setHasNoMicPermissions(true)
+      })
+  }, [hasRequestedMicPermissions])
+
+  /** Let user pick the active device from a dropdown. */
+  const handleDeviceChange = useCallback(
+    (event: React.ChangeEvent<HTMLSelectElement>) => {
+      setActiveAudioDeviceId(event.target.value)
+    },
+    []
+  )
+
+  /** Toggle play/pause for the recorded audio. */
   const onClickPlayPause = useCallback(() => {
     if (wavesurfer) {
       wavesurfer.playPause()
-      // This is because we want the time to be the duration of the audio when they stop recording,
-      // but once they start playing it, we want it to be the current time. So, once they start playing it
-      // we'll start keeping track of the playback time from that point onwards (until re-recording).
+      // We'll start tracking progressTime from now on
       setShouldUpdatePlaybackTime(true)
-      // despite the state change above, this is still needed to force a rerender and make the time styling work
       forceRerender()
     }
   }, [wavesurfer])
 
+  /** Start a new recording with the chosen device. */
   const startRecording = useCallback(async () => {
-    let audioDeviceId = activeAudioDeviceId;
-
-    if (!hasRequestedMicPermissions) {
-      // Ensure we prompt the user to grant microphone permissions
-      await navigator.mediaDevices
-        .getUserMedia({ audio: true })
-        .then(() =>
-          RecordPlugin.getAvailableAudioDevices().then((devices) => {
-            // Log all available media devices
-            console.log("Available audio devices:", devices);
-
-            setAvailableAudioDevices(devices);
-
-            if (devices.length > 1) {
-              // Choose the second device if there are multiple devices
-              const { deviceId, label } = devices[1];
-              console.log(`Selected audio device: ${label} (Device ID: ${deviceId})`);
-              setActiveAudioDeviceId(deviceId);
-              audioDeviceId = deviceId;
-            } else if (devices.length === 1) {
-              // Fallback to the only available device
-              const { deviceId, label } = devices[0];
-              console.log(`Selected audio device: ${label} (Device ID: ${deviceId})`);
-              setActiveAudioDeviceId(deviceId);
-              audioDeviceId = deviceId;
-            } else {
-              console.warn("No audio input devices found.");
-            }
-          })
-        )
-        .catch((_err) => {
-          console.error("Failed to get microphone permissions or devices.");
-          setHasNoMicPermissions(true);
-        });
-      setHasRequestedMicPermissions(true);
+    if (!recordPlugin || !wavesurfer) {
+      console.error("Recording setup is not initialized.")
+      return
     }
 
-    if (!recordPlugin || !audioDeviceId || !wavesurfer) {
-      console.error("Recording setup failed. Ensure all dependencies are initialized.");
-      return;
+    // If there's an existing recording, clear it first
+    if (recordingUrl) {
+      handleClear({ updateWidgetManager: false, deleteFile: true })
     }
 
+    // Wave color for "live recording" state
     wavesurfer.setOptions({
       waveColor: theme.colors.primary,
-    });
+    })
 
-    if (recordingUrl) {
-      handleClear({ updateWidgetManager: false, deleteFile: true });
+    try {
+      await recordPlugin.startRecording({
+        deviceId: activeAudioDeviceId || undefined,
+      })
+      console.log("Recording started with device:", activeAudioDeviceId)
+      forceRerender()
+    } catch (err) {
+      console.error("Error starting recording:", err)
     }
-
-    // Start recording with the selected device
-    console.log(`Starting recording with device ID: ${audioDeviceId}`);
-    recordPlugin.startRecording({ deviceId: audioDeviceId }).then(() => {
-      console.log("Recording started successfully.");
-      // Update the record button to show the user they can stop recording
-      forceRerender();
-    });
   }, [
-    activeAudioDeviceId,
-    hasRequestedMicPermissions,
     recordPlugin,
     wavesurfer,
-    theme,
+    activeAudioDeviceId,
     recordingUrl,
     handleClear,
-  ]);
+    theme,
+  ])
 
+  /** Stop recording (and let the record-end event handle the upload). */
   const stopRecording = useCallback(() => {
     if (!recordPlugin) return
-
     recordPlugin.stopRecording()
 
+    // Once recording is stopped, revert waveColor to a "non-recording" color
     wavesurfer?.setOptions({
-      // We are blending this color instead of directly using the theme color (fadedText40)
-      // because the "faded" part of fadedText40 means introducing some transparency, which
-      // causes problems with the progress waveform color because wavesurfer is choosing to
-      // tint the waveColor with the progressColor instead of directly setting the progressColor.
-      // This means that the low opacity of fadedText40 causes the progress waveform to
-      // have the same opacity which makes it impossible to darken it enough to match designs.
-      // We fix this by blending the colors to figure out what the resulting color should be at
-      // full opacity, and we usee that color to set the waveColor.
       waveColor: blend(theme.colors.fadedText40, theme.colors.secondaryBg),
     })
   }, [recordPlugin, wavesurfer, theme])
 
+  /** Hook to download the recorded WAV directly from the browser. */
   const downloadRecording = useDownloadUrl(recordingUrl, "recording.wav")
 
+  // Condition checks
   const isRecording = Boolean(recordPlugin?.isRecording())
   const isPlaying = Boolean(wavesurfer?.isPlaying())
-
   const isPlayingOrRecording = isRecording || isPlaying
-  const showPlaceholder = !isRecording && !recordingUrl && !hasNoMicPermissions
 
+  const showPlaceholder = !isRecording && !recordingUrl && !hasNoMicPermissions
   const showNoMicPermissionsOrPlaceholderOrError =
     hasNoMicPermissions || showPlaceholder || isError
 
+  // If disabled or no permission => can't record or switch devices
   const isDisabled = disabled || hasNoMicPermissions
 
   return (
@@ -460,10 +461,35 @@ const AudioInput: React.FC<Props> = ({
           </StyledWidgetLabelHelp>
         )}
       </WidgetLabel>
+
+      {/*
+        (Optional) Render device selection if we detect multiple mics.
+        You can remove the length check to always show the dropdown.
+      */}
+      {availableAudioDevices.length > 1 && (
+        <div style={{ marginBottom: "0.5rem" }}>
+          <label htmlFor="audioDeviceSelect" style={{ marginRight: "0.5rem" }}>
+            Select Microphone:
+          </label>
+          <select
+            id="audioDeviceSelect"
+            value={activeAudioDeviceId || ""}
+            onChange={handleDeviceChange}
+            disabled={isDisabled}
+          >
+            {availableAudioDevices.map(device => (
+              <option key={device.deviceId} value={device.deviceId}>
+                {device.label || `Device ${device.deviceId}`}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       <StyledWaveformContainerDiv>
         <Toolbar
           isFullScreen={false}
-          disableFullscreenMode={true}
+          disableFullscreenMode
           target={StyledWaveformContainerDiv}
         >
           {recordingUrl && (
@@ -483,6 +509,7 @@ const AudioInput: React.FC<Props> = ({
             />
           )}
         </Toolbar>
+
         <AudioInputActionButtons
           isRecording={isRecording}
           isPlaying={isPlaying}
@@ -498,6 +525,7 @@ const AudioInput: React.FC<Props> = ({
           }}
           disabled={isDisabled}
         />
+
         <StyledWaveformInnerDiv>
           {isError && <AudioInputErrorState />}
           {showPlaceholder && <Placeholder />}
@@ -508,6 +536,7 @@ const AudioInput: React.FC<Props> = ({
             show={!showNoMicPermissionsOrPlaceholderOrError}
           />
         </StyledWaveformInnerDiv>
+
         <StyledWaveformTimeCode
           isPlayingOrRecording={isPlayingOrRecording}
           data-testid="stAudioInputWaveformTimeCode"
