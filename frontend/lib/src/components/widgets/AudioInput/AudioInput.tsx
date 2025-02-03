@@ -466,7 +466,7 @@ const AudioInput: React.FC<Props> = ({
         (Optional) Render device selection if we detect multiple mics.
         You can remove the length check to always show the dropdown.
       */}
-      {availableAudioDevices.length > 1 && (
+      {availableAudioDevices.length > 0 && (
         <div style={{ marginBottom: "0.5rem" }}>
           <label htmlFor="audioDeviceSelect" style={{ marginRight: "0.5rem" }}>
             Select Microphone:
